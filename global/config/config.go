@@ -126,6 +126,14 @@ type WebsocketReverse struct {
 	MiddleWares `yaml:"middlewares"`
 }
 
+type WebsocketFortune struct {
+	Disabled          bool	 `yaml:"disabled"`
+	Url               string `yaml:"url"`
+	ReconnectInterval int    `yaml:"reconnect-interval"`
+
+	MiddleWares `yaml:"middlewares"`
+}
+
 // LambdaServer 云函数配置
 type LambdaServer struct {
 	Disabled bool   `yaml:"disabled"`
@@ -231,6 +239,19 @@ func Get() *Config {
 			_ = node.Encode(rwsConf)
 			config.Servers = append(config.Servers, map[string]yaml.Node{"ws-reverse": *node})
 		}
+		if os.Getenv("GCQ_FWS_URL") != "" {
+			node := &yaml.Node{}
+			fwsConf := &WebsocketFortune{
+				MiddleWares: MiddleWares{
+					AccessToken: accessTokenEnv,
+				},
+			}
+			global.SetExcludeDefault(&fwsConf.Disabled, global.EnsureBool(os.Getenv("GCQ_FWS_DISABLE"), false), false)
+			global.SetExcludeDefault(&fwsConf.Url, os.Getenv("GCQ_FWS_URL"), "")
+			global.SetExcludeDefault(&fwsConf.ReconnectInterval, int(toInt64(os.Getenv("GCQ_FWS_RECONNECT_INTERVAL"))), 3000)
+			_ = node.Encode(fwsConf)
+			config.Servers = append(config.Servers, map[string]yaml.Node{"ws-fortune": *node})
+		}
 	})
 	return config
 }
@@ -255,6 +276,7 @@ func generateConfig() {
 > 3: 反向 Websocket 通信
 > 4: pprof 性能分析服务器
 > 5: 云函数服务
+> f: 按F鍵進坦克,連接FortuneAgent進行通信,天降正義
 请输入你需要的编号，可输入多个，同一编号也可输入多个(如: 233)
 您的选择是:`)
 	input := bufio.NewReader(os.Stdin)
@@ -274,6 +296,8 @@ func generateConfig() {
 			sb.WriteString(pprofDefault)
 		case '5':
 			sb.WriteString(lambdaDefault)
+		case 'f','F':
+			sb.WriteString(wsFortuneDefault)
 		}
 	}
 	_ = os.WriteFile("config.yml", []byte(sb.String()), 0o644)
@@ -332,6 +356,16 @@ const wsReverseDefault = `  # 反向WS设置
       api: ws://your_websocket_api.server
       # 反向WS Event 地址
       event: ws://your_websocket_event.server
+      # 重连间隔 单位毫秒
+      reconnect-interval: 3000
+      middlewares:
+        <<: *default # 引用默认中间件
+`
+
+const wsFortuneDefault = `  # FortuneAgent WS设置
+  - ws-fortune:
+      # FortuneAgent工具WS URL 地址
+      url: ws://127.0.0.1:5757/go-cqhttp
       # 重连间隔 单位毫秒
       reconnect-interval: 3000
       middlewares:

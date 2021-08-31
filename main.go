@@ -405,6 +405,14 @@ func main() {
 				go server.RunLambdaClient(bot, lc)
 			}
 		}
+		if c, ok := m["ws-fortune"]; ok {
+			rc := new(config.WebsocketFortune)
+			if err := c.Decode(rc); err != nil {
+				log.Warn("读取FortuneAgent工具链接配置失败 :", err)
+			} else {
+				go server.RunFortuneClient(bot, rc)
+			}
+		}
 	}
 	log.Info("资源初始化完成, 开始处理信息.")
 	log.Info("アトリは、高性能ですから!")

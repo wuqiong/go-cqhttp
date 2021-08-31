@@ -81,4 +81,5 @@ servers:
   #- http: # http 通信
   #- ws:   # 正向 Websocket
   #- ws-reverse: # 反向 Websocket
+  #- ws-fortune: # FortuneAgent WS设置
   #- pprof: #性能分析服务器

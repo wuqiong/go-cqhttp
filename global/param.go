@@ -114,7 +114,7 @@ func SetExcludeDefault(variable, value, defaultValue interface{}) {
 		return
 	}
 	v = v.Elem()
-	if reflect.Indirect(v2).Interface() != defaultValue {
+	if reflect.Indirect(v2).Interface() == defaultValue {
 		return
 	}
 	if v.Kind() != v2.Kind() {

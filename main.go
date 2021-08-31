@@ -154,15 +154,22 @@ func main() {
 		log.Debugf("开发交流群: 192548878")
 	}
 	log.Info("用户交流群: 721829413")
+	envQQProto := getEnvProtocolConfig()
 	if !global.PathExists("device.json") {
 		log.Warn("虚拟设备信息不存在, 将自动生成随机设备.")
 		client.GenRandomDevice()
+		if envQQProto > 0 {
+			global.SetExcludeDefault(&client.SystemDeviceInfo.Protocol, envQQProto, client.SystemDeviceInfo.Protocol)
+		}
 		_ = os.WriteFile("device.json", client.SystemDeviceInfo.ToJson(), 0o644)
 		log.Info("已生成设备信息并保存到 device.json 文件.")
 	} else {
 		log.Info("将使用 device.json 内的设备信息运行Bot.")
 		if err := client.SystemDeviceInfo.ReadJson([]byte(global.ReadAllText("device.json"))); err != nil {
 			log.Fatalf("加载设备信息失败: %v", err)
+		}
+		if envQQProto > 0 {
+			global.SetExcludeDefault(&client.SystemDeviceInfo.Protocol, envQQProto, client.SystemDeviceInfo.Protocol)
 		}
 	}
 
@@ -650,4 +657,32 @@ func newClient() *client.QQClient {
 		}
 	})
 	return c
+}
+
+// getEnvProtocolConfig 从环境变量中读取QQ协议类型
+func getEnvProtocolConfig() client.ClientProtocol {
+	var cliProto client.ClientProtocol = 0
+	qqUin := os.Getenv("GCQ_UIN")
+	protoString := os.Getenv("GCQ_PROTOCOL")
+	qqUin = strings.ToLower(qqUin)
+	qqUin = strings.TrimSpace(qqUin)
+	protoString = strings.ToLower(protoString)
+	protoString = strings.TrimSpace(protoString)
+	if qqUin != "" && protoString != "" {
+		switch protoString {
+		case "ipad":
+			cliProto = client.IPad
+		case "android phone", "androidphone":
+			cliProto = client.AndroidPhone
+		case "android watch", "androidwatch":
+			cliProto = client.AndroidWatch
+		case "macos":
+			cliProto = client.MacOS
+		case "企点", "qidian":
+			cliProto = client.QiDian
+		default:
+			cliProto = 0
+		}
+	}
+	return cliProto
 }

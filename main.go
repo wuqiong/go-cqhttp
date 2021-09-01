@@ -346,6 +346,25 @@ func main() {
 	})
 	saveToken()
 	cli.AllowSlider = true
+	if runtime.GOOS == "windows" {
+		global.DisableConsoleQuickEditMode()
+		consoleTitle := fmt.Sprintf("当前登录QQ号: %d, 昵称: %v, 登录协议: %v", cli.Uin, cli.Nickname, func() string {
+			switch client.SystemDeviceInfo.Protocol {
+			case client.IPad:
+				return "iPad"
+			case client.AndroidPhone:
+				return "Android Phone"
+			case client.AndroidWatch:
+				return "Android Watch"
+			case client.MacOS:
+				return "MacOS"
+			case client.QiDian:
+				return "企点"
+			}
+			return "未知"
+		}())
+		global.SetConsoleTitle(consoleTitle)
+	}
 	log.Infof("登录成功 欢迎使用: %v", cli.Nickname)
 	log.Info("开始加载好友列表...")
 	global.Check(cli.ReloadFriendList(), true)

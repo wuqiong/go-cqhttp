@@ -158,7 +158,10 @@ func Get() *Config {
 		hasEnvironmentConf := os.Getenv("GCQ_UIN") != ""
 
 		file, err := os.Open(DefaultConfigFile)
-		config = &Config{}
+		config = &Config{
+			Servers: make([]map[string]yaml.Node, 0),
+			Database: make(map[string]yaml.Node),
+		}
 		if err == nil {
 			defer func() { _ = file.Close() }()
 			if err = yaml.NewDecoder(file).Decode(config); err != nil && !hasEnvironmentConf {

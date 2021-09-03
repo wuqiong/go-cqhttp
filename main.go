@@ -55,6 +55,9 @@ var (
 )
 
 func main() {
+	if runtime.GOOS == "windows"{
+		global.AdjustConsoleWindowSize(640, 800)
+	}
 	c := flag.String("c", config.DefaultConfigFile, "configuration filename default is config.hjson")
 	d := flag.Bool("d", false, "running as a daemon")
 	h := flag.Bool("h", false, "this help")

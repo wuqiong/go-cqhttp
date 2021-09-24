@@ -67,12 +67,14 @@ func (c *fortuneClient) connectUniversal() {
 	if c.token != "" {
 		header["Authorization"] = []string{"Token " + c.token}
 	}
+connectWS:
 	conn, _, err := websocket.DefaultDialer.Dial(c.conf.Url, header) // nolint
 	if err != nil {
 		log.Warnf("连接到FortuneAgent工具WebSocket服务器 %v 时出现错误: %v", c.conf.Url, err)
 		if c.conf.ReconnectInterval != 0 {
 			time.Sleep(time.Millisecond * time.Duration(c.conf.ReconnectInterval))
-			c.connectUniversal()
+			//c.connectUniversal()
+			goto connectWS
 		}
 		return
 	}

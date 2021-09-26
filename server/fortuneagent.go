@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"golang.org/x/sync/semaphore"
 )
 
 
@@ -28,6 +29,7 @@ type fortuneClient struct {
 	conf *config.WebsocketFortune
 
 	universalConn *fortuneAgentConn
+	universalConnSem *semaphore.Weighted
 	token         string
 	filter        string
 }
@@ -47,6 +49,7 @@ func RunFortuneClient(b *coolq.CQBot, conf *config.WebsocketFortune) {
 	c := &fortuneClient{
 		bot:    b,
 		conf:   conf,
+		universalConnSem: semaphore.NewWeighted(1),
 		token:  conf.AccessToken,
 		filter: conf.Filter,
 	}
@@ -58,6 +61,11 @@ func RunFortuneClient(b *coolq.CQBot, conf *config.WebsocketFortune) {
 }
 
 func (c *fortuneClient) connectUniversal() {
+	if !c.universalConnSem.TryAcquire(1) {
+		return
+	}
+	defer c.universalConnSem.Release(1)
+
 	log.Infof("开始尝试连接到FortuneAgent工具WS服务器: %v", c.conf.Url)
 	header := http.Header{
 		"X-Client-Role": []string{"FortuneAgent-QQClient"},

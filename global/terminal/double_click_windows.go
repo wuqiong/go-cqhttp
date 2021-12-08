@@ -23,7 +23,7 @@ func RunningByDoubleClick() bool {
 			return false
 		}
 	}
-	return true
+	return false
 }
 
 // NoMoreDoubleClick 提示用户不要双击运行，并生成安全启动脚本

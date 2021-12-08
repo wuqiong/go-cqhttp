@@ -55,7 +55,7 @@ func (bot *CQBot) CQGetQiDianAccountInfo() global.MSG {
 func (bot *CQBot) CQGetGuildServiceProfile() global.MSG {
 	return OK(global.MSG{
 		"nickname":   bot.Client.GuildService.Nickname,
-		"tiny_id":    bot.Client.GuildService.TinyId,
+		"tiny_id":    fU64(bot.Client.GuildService.TinyId),
 		"avatar_url": bot.Client.GuildService.AvatarUrl,
 	})
 }
@@ -76,9 +76,9 @@ func (bot *CQBot) CQGetGuildList() global.MSG {
 		}
 		*/
 		fs = append(fs, global.MSG{
-			"guild_id":         info.GuildId,
+			"guild_id":         fU64(info.GuildId),
 			"guild_name":       info.GuildName,
-			"guild_display_id": info.GuildCode,
+			"guild_display_id": fU64(info.GuildCode),
 			// "channels":         channels,
 		})
 	}
@@ -94,7 +94,7 @@ func (bot *CQBot) CQGetGuildMetaByGuest(guildID uint64) global.MSG {
 		return Failed(100, "API_ERROR", err.Error())
 	}
 	return OK(global.MSG{
-		"guild_id":         meta.GuildId,
+		"guild_id":         fU64(meta.GuildId),
 		"guild_name":       meta.GuildName,
 		"guild_profile":    meta.GuildProfile,
 		"create_time":      meta.CreateTime,
@@ -102,7 +102,7 @@ func (bot *CQBot) CQGetGuildMetaByGuest(guildID uint64) global.MSG {
 		"max_robot_count":  meta.MaxRobotCount,
 		"max_admin_count":  meta.MaxAdminCount,
 		"member_count":     meta.MemberCount,
-		"owner_id":         meta.OwnerId,
+		"owner_id":         fU64(meta.OwnerId),
 	})
 }
 
@@ -128,6 +128,7 @@ func (bot *CQBot) CQGetGuildChannelList(guildID uint64, noCache bool) global.MSG
 	return OK(channels)
 }
 
+/*
 // CQGetGuildMembers 获取频道成员列表
 // @route(get_guild_members)
 func (bot *CQBot) CQGetGuildMembers(guildID uint64) global.MSG {
@@ -135,36 +136,32 @@ func (bot *CQBot) CQGetGuildMembers(guildID uint64) global.MSG {
 	if guild == nil {
 		return Failed(100, "GUILD_NOT_FOUND")
 	}
-	members := make([]global.MSG, len(guild.Members))
-	bots := make([]global.MSG, len(guild.Bots))
-	admins := make([]global.MSG, len(guild.Admins))
-	for i, m := range guild.Members {
-		members[i] = convertGuildMemberInfo(m)
-	}
-	for i, m := range guild.Bots {
-		bots[i] = convertGuildMemberInfo(m)
-	}
-	for i, m := range guild.Admins {
-		admins[i] = convertGuildMemberInfo(m)
-	}
-	return OK(global.MSG{
-		"members": members,
-		"bots":    bots,
-		"admins":  admins,
-	})
+	return OK(nil) // todo
 }
+*/
 
 // CQGetGuildRoles 获取频道角色列表
 // @route(get_guild_roles)
 func (bot *CQBot) CQGetGuildRoles(guildID uint64) global.MSG {
-	roles, err := bot.Client.GuildService.GetGuildRoles(guildID)
+	r, err := bot.Client.GuildService.GetGuildRoles(guildID)
 	if err != nil {
 		log.Errorf("获取频道 %v 角色列表时出现错误: %v", guildID, err)
 		return Failed(100, "API_ERROR", err.Error())
 	}
-	return OK(global.MSG{
-		"roles": roles,
-	})
+	roles := make([]global.MSG, len(r))
+	for i, role := range r {
+		roles[i] = global.MSG{
+			"role_id":      fU64(role.RoleId),
+			"role_name":    role.RoleName,
+			"argb_color":   role.ArgbColor,
+			"independent":  role.Independent,
+			"member_count": role.Num,
+			"max_count":    role.MaxNum,
+			"owned":        role.Owned,
+			"disabled":     role.Disabled,
+		}
+	}
+	return OK(roles)
 }
 
 // CQCreateGuildRole 创建频道角色
@@ -182,7 +179,7 @@ func (bot *CQBot) CQCreateGuildRole(guildID uint64, name string, color uint32, i
 		return Failed(100, "API_ERROR", err.Error())
 	}
 	return OK(global.MSG{
-		"role": role,
+		"role_id": fU64(role),
 	})
 }
 
@@ -215,7 +212,7 @@ func (bot *CQBot) CQSetGuildMemberRole(guildID uint64, set bool, roleID uint64, 
 }
 
 // CQModifyRoleInGuild 修改频道角色
-// @route(modify_role_in_guild)
+// @route(update_guild_role)
 func (bot *CQBot) CQModifyRoleInGuild(guildID uint64, roleID uint64, name string, color uint32, indepedent bool) global.MSG {
 	err := bot.Client.GuildService.ModifyRoleInGuild(guildID, roleID, name, color, indepedent)
 	if err != nil {
@@ -223,6 +220,32 @@ func (bot *CQBot) CQModifyRoleInGuild(guildID uint64, roleID uint64, name string
 		return Failed(100, "API_ERROR", err.Error())
 	}
 	return OK(nil)
+}
+
+// CQGetTopicChannelFeeds 获取话题频道帖子列表
+// @route(get_topic_channel_feeds)
+func (bot *CQBot) CQGetTopicChannelFeeds(guildID, channelID uint64) global.MSG {
+	guild := bot.Client.GuildService.FindGuild(guildID)
+	if guild == nil {
+		return Failed(100, "GUILD_NOT_FOUND")
+	}
+	channel := guild.FindChannel(channelID)
+	if channel == nil {
+		return Failed(100, "CHANNEL_NOT_FOUND")
+	}
+	if channel.ChannelType != client.ChannelTypeTopic {
+		return Failed(100, "CHANNEL_TYPE_ERROR")
+	}
+	feeds, err := bot.Client.GuildService.GetTopicChannelFeeds(guildID, channelID)
+	if err != nil {
+		log.Errorf("获取频道 %v 帖子时出现错误: %v", channelID, err)
+		return Failed(100, "API_ERROR", err.Error())
+	}
+	c := make([]global.MSG, 0, len(feeds))
+	for _, feed := range feeds {
+		c = append(c, convertChannelFeedInfo(feed))
+	}
+	return OK(c)
 }
 
 // CQGetFriendList 获取好友列表
@@ -655,7 +678,7 @@ func (bot *CQBot) CQSendGuildChannelMessage(guildID, channelID uint64, m gjson.R
 	fixAt := func(elem []message.IMessageElement) {
 		for _, e := range elem {
 			if at, ok := e.(*message.AtElement); ok && at.Target != 0 && at.Display == "" {
-				mem := guild.FindMember(uint64(at.Target))
+				mem, _ := bot.Client.GuildService.GetGuildMemberProfileInfo(guildID, uint64(at.Target))
 				if mem != nil {
 					at.Display = "@" + mem.Nickname
 				} else {
@@ -868,6 +891,7 @@ func (bot *CQBot) CQSetGroupCard(groupID, userID int64, card string) global.MSG 
 //
 // https://git.io/Jtz10
 // @route(set_group_special_title)
+// @rename(title->special_title)
 func (bot *CQBot) CQSetGroupSpecialTitle(groupID, userID int64, title string) global.MSG {
 	if g := bot.Client.FindGroup(groupID); g != nil {
 		if m := g.FindMember(userID); m != nil {
@@ -1346,7 +1370,7 @@ func (bot *CQBot) CQGetImage(file string) global.MSG {
 			"filename": r.ReadString(),
 			"url":      r.ReadString(),
 		}
-		local := path.Join(global.CachePath, file+"."+path.Ext(msg["filename"].(string)))
+		local := path.Join(global.CachePath, file+path.Ext(msg["filename"].(string)))
 		if !global.PathExists(local) {
 			if body, err := global.HTTPGetReadCloser(msg["url"].(string)); err == nil {
 				f, _ := os.OpenFile(local, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o0644)

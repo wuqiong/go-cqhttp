@@ -24,11 +24,29 @@ import (
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
 	"github.com/Mrs4s/go-cqhttp/global"
-	"github.com/Mrs4s/go-cqhttp/internal/base"
+	"github.com/Mrs4s/go-cqhttp/internal/param"
 	"github.com/Mrs4s/go-cqhttp/modules/api"
 	"github.com/Mrs4s/go-cqhttp/modules/config"
 	"github.com/Mrs4s/go-cqhttp/modules/filter"
 )
+
+// HTTPServer HTTP通信相关配置
+type HTTPServer struct {
+	Disabled    bool   `yaml:"disabled"`
+	Host        string `yaml:"host"`
+	Port        int    `yaml:"port"`
+	Timeout     int32  `yaml:"timeout"`
+	LongPolling struct {
+		Enabled      bool `yaml:"enabled"`
+		MaxQueueSize int  `yaml:"max-queue-size"`
+	} `yaml:"long-polling"`
+	Post []struct {
+		URL    string `yaml:"url"`
+		Secret string `yaml:"secret"`
+	}
+
+	MiddleWares `yaml:"middlewares"`
+}
 
 type httpServer struct {
 	HTTP        *http.Server
@@ -50,6 +68,68 @@ type httpCtx struct {
 	json     gjson.Result
 	query    url.Values
 	postForm url.Values
+}
+
+const httpDefault = `  # HTTP 通信设置
+  - http:
+      # 服务端监听地址
+      host: 127.0.0.1
+      # 服务端监听端口
+      port: 5700
+      # 反向HTTP超时时间, 单位秒
+      # 最小值为5，小于5将会忽略本项设置
+      timeout: 5
+      # 长轮询拓展
+      long-polling:
+        # 是否开启
+        enabled: false
+        # 消息队列大小，0 表示不限制队列大小，谨慎使用
+        max-queue-size: 2000
+      middlewares:
+        <<: *default # 引用默认中间件
+      # 反向HTTP POST地址列表
+      post:
+      #- url: '' # 地址
+      #  secret: ''           # 密钥
+      #- url: http://127.0.0.1:5701/ # 地址
+      #  secret: ''          # 密钥
+`
+
+func init() {
+	config.AddServer(&config.Server{
+		Brief:   "HTTP通信",
+		Default: httpDefault,
+		ParseEnv: func() (string, *yaml.Node) {
+			if os.Getenv("GCQ_HTTP_PORT") != "" {
+				// type convert tools
+				toInt64 := func(str string) int64 {
+					i, _ := strconv.ParseInt(str, 10, 64)
+					return i
+				}
+				accessTokenEnv := os.Getenv("GCQ_ACCESS_TOKEN")
+				node := &yaml.Node{}
+				httpConf := &HTTPServer{
+					Host: "0.0.0.0",
+					Port: 5700,
+					MiddleWares: MiddleWares{
+						AccessToken: accessTokenEnv,
+					},
+				}
+				param.SetExcludeDefault(&httpConf.Disabled, param.EnsureBool(os.Getenv("GCQ_HTTP_DISABLE"), false), false)
+				param.SetExcludeDefault(&httpConf.Host, os.Getenv("GCQ_HTTP_HOST"), "")
+				param.SetExcludeDefault(&httpConf.Port, int(toInt64(os.Getenv("GCQ_HTTP_PORT"))), 0)
+				if os.Getenv("GCQ_HTTP_POST_URL") != "" {
+					httpConf.Post = append(httpConf.Post, struct {
+						URL    string `yaml:"url"`
+						Secret string `yaml:"secret"`
+					}{os.Getenv("GCQ_HTTP_POST_URL"), os.Getenv("GCQ_HTTP_POST_SECRET")})
+				}
+				_ = node.Encode(httpConf)
+				return "http", node
+			}
+			return "", nil
+		},
+	})
 }
 
 func (h *httpCtx) Get(s string) gjson.Result {
@@ -121,7 +201,7 @@ func (s *httpServer) ServeHTTP(writer http.ResponseWriter, request *http.Request
 	}
 
 	var response global.MSG
-	if base.AcceptOneBot12HTTPEndPoint && request.URL.Path == "/" {
+	if request.URL.Path == "/" {
 		action := strings.TrimSuffix(ctx.Get("action").Str, "_async")
 		log.Debugf("HTTPServer接收到API调用: %v", action)
 		response = s.api.Call(action, ctx.Get("params"))
@@ -164,7 +244,7 @@ func checkAuth(req *http.Request, token string) int {
 
 // runHTTP 启动HTTP服务器与HTTP上报客户端
 func runHTTP(bot *coolq.CQBot, node yaml.Node) {
-	var conf config.HTTPServer
+	var conf HTTPServer
 	switch err := node.Decode(&conf); {
 	case err != nil:
 		log.Warn("读取http配置失败 :", err)
@@ -236,16 +316,17 @@ func (c *HTTPClient) onBotPushEvent(e *coolq.Event) {
 	}
 
 	client := http.Client{Timeout: time.Second * time.Duration(c.timeout)}
-	req, _ := http.NewRequest("POST", c.addr, bytes.NewReader(e.JSONBytes()))
-	req.Header.Set("X-Self-ID", strconv.FormatInt(c.bot.Client.Uin, 10))
-	req.Header.Set("User-Agent", "CQHttp/4.15.0")
+	header := make(http.Header)
+	header.Set("X-Self-ID", strconv.FormatInt(c.bot.Client.Uin, 10))
+	header.Set("User-Agent", "CQHttp/4.15.0")
+	header.Set("Content-Type", "application/json")
 	if c.secret != "" {
 		mac := hmac.New(sha1.New, []byte(c.secret))
 		_, _ = mac.Write(e.JSONBytes())
-		req.Header.Set("X-Signature", "sha1="+hex.EncodeToString(mac.Sum(nil)))
+		header.Set("X-Signature", "sha1="+hex.EncodeToString(mac.Sum(nil)))
 	}
 	if c.apiPort != 0 {
-		req.Header.Set("X-API-Port", strconv.FormatInt(int64(c.apiPort), 10))
+		header.Set("X-API-Port", strconv.FormatInt(int64(c.apiPort), 10))
 	}
 
 	var res *http.Response
@@ -253,6 +334,15 @@ func (c *HTTPClient) onBotPushEvent(e *coolq.Event) {
 	const maxAttemptTimes = 5
 
 	for i := 0; i <= maxAttemptTimes; i++ {
+		// see https://stackoverflow.com/questions/31337891/net-http-http-contentlength-222-with-body-length-0
+		// we should create a new request for every single post trial
+		req, err := http.NewRequest("POST", c.addr, bytes.NewReader(e.JSONBytes()))
+		if err != nil {
+			log.Warnf("上报 Event 数据到 %v 时创建请求失败: %v", c.addr, err)
+			return
+		}
+		req.Header = header
+
 		res, err = client.Do(req)
 		if err == nil {
 			//goland:noinspection GoDeferInLoop

@@ -136,6 +136,7 @@ func ResetWorkingDir() {
 			args = append(args, os.Args[i])
 		}
 	}
+	os.MkdirAll(wd, os.ModePerm)
 	p, _ := filepath.Abs(os.Args[0])
 	proc := exec.Command(p, args...)
 	proc.Stdin = os.Stdin

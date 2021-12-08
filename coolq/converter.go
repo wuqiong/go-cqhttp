@@ -3,6 +3,8 @@ package coolq
 import (
 	"strconv"
 
+	"github.com/Mrs4s/MiraiGo/topic"
+
 	"github.com/Mrs4s/MiraiGo/client"
 	"github.com/Mrs4s/MiraiGo/message"
 	log "github.com/sirupsen/logrus"
@@ -52,7 +54,7 @@ func convertGroupMemberInfo(groupID int64, m *client.GroupMemberInfo) global.MSG
 
 func convertGuildMemberInfo(m *client.GuildMemberInfo) global.MSG {
 	return global.MSG{
-		"tiny_id":  m.TinyId,
+		"tiny_id":  fU64(m.TinyId),
 		"title":    m.Title,
 		"nickname": m.Nickname,
 		"role":     m.Role,
@@ -144,16 +146,62 @@ func convertChannelInfo(c *client.ChannelInfo) global.MSG {
 		})
 	}
 	return global.MSG{
-		"channel_id":        c.ChannelId,
+		"channel_id":        fU64(c.ChannelId),
 		"channel_type":      c.ChannelType,
 		"channel_name":      c.ChannelName,
-		"owner_guild_id":    c.Meta.GuildId,
+		"owner_guild_id":    fU64(c.Meta.GuildId),
 		"creator_id":        c.Meta.CreatorUin,
-		"creator_tiny_id":   c.Meta.CreatorTinyId,
+		"creator_tiny_id":   fU64(c.Meta.CreatorTinyId),
 		"create_time":       c.Meta.CreateTime,
 		"current_slow_mode": c.Meta.CurrentSlowMode,
 		"talk_permission":   c.Meta.TalkPermission,
 		"visible_type":      c.Meta.VisibleType,
 		"slow_modes":        slowModes,
 	}
+}
+
+func convertChannelFeedInfo(f *topic.Feed) global.MSG {
+	m := global.MSG{
+		"id":          f.Id,
+		"title":       f.Title,
+		"sub_title":   f.SubTitle,
+		"create_time": f.CreateTime,
+		"guild_id":    fU64(f.GuildId),
+		"channel_id":  fU64(f.ChannelId),
+		"poster_info": global.MSG{
+			"tiny_id":  f.Poster.TinyIdStr,
+			"nickname": f.Poster.Nickname,
+			"icon_url": f.Poster.IconUrl,
+		},
+		"contents": FeedContentsToArrayMessage(f.Contents),
+	}
+	images := make([]global.MSG, 0, len(f.Images))
+	videos := make([]global.MSG, 0, len(f.Videos))
+	for _, image := range f.Images {
+		images = append(images, global.MSG{
+			"file_id":    image.FileId,
+			"pattern_id": image.PatternId,
+			"url":        image.Url,
+			"width":      image.Width,
+			"height":     image.Height,
+		})
+	}
+	for _, video := range f.Videos {
+		videos = append(videos, global.MSG{
+			"file_id":    video.FileId,
+			"pattern_id": video.PatternId,
+			"url":        video.Url,
+			"width":      video.Width,
+			"height":     video.Height,
+		})
+	}
+	m["resource"] = global.MSG{
+		"images": images,
+		"videos": videos,
+	}
+	return m
+}
+
+func fU64(v uint64) string {
+	return strconv.FormatUint(v, 10)
 }

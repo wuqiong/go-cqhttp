@@ -166,7 +166,7 @@ func ToArrayMessage(e []message.IMessageElement, source MessageSource) (r []glob
 			} else {
 				m = global.MSG{
 					"type": "at",
-					"data": map[string]string{"qq": strconv.FormatInt(o.Target, 10)},
+					"data": map[string]string{"qq": strconv.FormatUint(uint64(o.Target), 10)},
 				}
 			}
 		case *message.RedBagElement:
@@ -244,6 +244,11 @@ func ToArrayMessage(e []message.IMessageElement, source MessageSource) (r []glob
 					"data": map[string]string{"data": o.Content, "resid": strconv.FormatInt(int64(o.Id), 10)},
 				}
 			}
+		case *message.AnimatedSticker:
+			m = global.MSG{
+				"type": "face",
+				"data": map[string]string{"id": strconv.FormatInt(int64(o.ID), 10), "type": "sticker"},
+			}
 		default:
 			continue
 		}
@@ -305,7 +310,7 @@ func ToStringMessage(e []message.IMessageElement, source MessageSource, isRaw ..
 				write("[CQ:at,qq=all]")
 				continue
 			}
-			write("[CQ:at,qq=%d]", o.Target)
+			write("[CQ:at,qq=%d]", uint64(o.Target))
 		case *message.RedBagElement:
 			write("[CQ:redbag,title=%s]", o.Title)
 		case *message.ForwardElement:
@@ -361,6 +366,8 @@ func ToStringMessage(e []message.IMessageElement, source MessageSource, isRaw ..
 			}
 		case *message.LightAppElement:
 			write(`[CQ:json,data=%s]`, CQCodeEscapeValue(o.Content))
+		case *message.AnimatedSticker:
+			write(`[CQ:face,id=%d,type=sticker]`, o.ID)
 		}
 	}
 	r = sb.String() // 内部已拷贝
@@ -465,6 +472,11 @@ func ToMessageContent(e []message.IMessageElement) (r []global.MSG) {
 					"type": "json",
 					"data": global.MSG{"data": o.Content, "resid": o.Id},
 				}
+			}
+		case *message.AnimatedSticker:
+			m = global.MSG{
+				"type": "face",
+				"data": global.MSG{"id": o.ID, "type": "sticker"},
 			}
 		default:
 			continue
@@ -927,17 +939,12 @@ func (bot *CQBot) ToElement(t string, d map[string]string, sourceType MessageSou
 		if err != nil {
 			return nil, err
 		}
-		return message.NewFace(int32(id)), nil
-	case "mention":
-		if !base.AcceptOneBot12Message {
-			return nil, errors.New("unsupported onebot 12 style")
+		if d["type"] == "sticker" {
+			return &message.AnimatedSticker{ID: int32(id)}, nil
 		}
-		fallthrough
+		return message.NewFace(int32(id)), nil
 	case "at":
 		qq := d["qq"]
-		if base.AcceptOneBot12Message && qq == "" {
-			qq = d["user_id"]
-		}
 		if qq == "all" {
 			return message.AtAll(), nil
 		}

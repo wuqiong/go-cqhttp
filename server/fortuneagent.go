@@ -3,8 +3,11 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"github.com/Mrs4s/go-cqhttp/internal/param"
+	"github.com/Mrs4s/go-cqhttp/modules/config"
 	"gopkg.in/yaml.v3"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -14,7 +17,6 @@ import (
 	"github.com/Mrs4s/go-cqhttp/coolq"
 	"github.com/Mrs4s/go-cqhttp/global"
 	"github.com/Mrs4s/go-cqhttp/modules/api"
-	"github.com/Mrs4s/go-cqhttp/modules/config"
 	"github.com/Mrs4s/go-cqhttp/modules/filter"
 
 	"github.com/Mrs4s/MiraiGo/utils"
@@ -25,11 +27,30 @@ import (
 )
 
 
+const wsFortuneDefault = `  # FortuneAgent WS设置
+ - ws-fortune:
+     # FortuneAgent工具WS URL 地址
+     url: ws://127.0.0.1:5757/go-cqhttp
+     # 重连间隔 单位毫秒
+     reconnect-interval: 3000
+     middlewares:
+       <<: *default # 引用默认中间件
+`
+
+
+type WebsocketFortune struct {
+	Disabled          bool	 `yaml:"disabled"`
+	Url               string `yaml:"url"`
+	ReconnectInterval int    `yaml:"reconnect-interval"`
+
+	MiddleWares `yaml:"middlewares"`
+}
+
 
 // FortuneAgent WebSocket客户端实例
 type fortuneClient struct {
 	bot  *coolq.CQBot
-	conf *config.WebsocketFortune
+	conf *WebsocketFortune
 
 	universalConn *fortuneAgentConn
 	universalConnSem *semaphore.Weighted
@@ -43,11 +64,40 @@ type fortuneAgentConn struct {
 	apiCaller *api.Caller
 }
 
+func init(){
+	config.AddServer(&config.Server{
+		Brief:   "连接FortuneAgent进行通信",
+		Default: wsFortuneDefault,
+		ParseEnv: func() (string, *yaml.Node) {
+			if os.Getenv("GCQ_FWS_URL") != "" {
+				// type convert tools
+				toInt64 := func(str string) int64 {
+					i, _ := strconv.ParseInt(str, 10, 64)
+					return i
+				}
+				accessTokenEnv := os.Getenv("GCQ_ACCESS_TOKEN")
+				node := &yaml.Node{}
+				fwsConf := &WebsocketFortune{
+					MiddleWares: MiddleWares{
+						AccessToken: accessTokenEnv,
+					},
+				}
+				param.SetExcludeDefault(&fwsConf.Disabled, param.EnsureBool(os.Getenv("GCQ_FWS_DISABLE"), false), false)
+				param.SetExcludeDefault(&fwsConf.Url, os.Getenv("GCQ_FWS_URL"), "")
+				param.SetExcludeDefault(&fwsConf.ReconnectInterval, int(toInt64(os.Getenv("GCQ_FWS_RECONNECT_INTERVAL"))), 3000)
+				_ = node.Encode(fwsConf)
+				return "ws-fortune", node
+			}
+			return "", nil
+		},
+	})
+}
+
 
 // RunFortuneClient 运行一个正向WS client
 //func runFortuneClient(b *coolq.CQBot, conf *config.WebsocketFortune) {
 func runFortuneClient(b *coolq.CQBot, node yaml.Node) {
-	var conf config.WebsocketFortune
+	var conf WebsocketFortune
 	switch err := node.Decode(&conf); {
 	case err != nil:
 		log.Warn("读取Fortune Websocket配置失败 :", err)

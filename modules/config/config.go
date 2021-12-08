@@ -6,12 +6,10 @@ import (
 	_ "embed" // embed the default config file
 	"fmt"
 	"os"
-	"path"
 	"strconv"
 	"strings"
-	"sync"
 
-	"github.com/Mrs4s/go-cqhttp/global"
+	"github.com/Mrs4s/go-cqhttp/internal/param"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -21,27 +19,27 @@ import (
 //go:embed default_config.yml
 var defaultConfig string
 
-var currentPath = getCurrentPath()
+// Reconnect 重连配置
+type Reconnect struct {
+	Disabled bool `yaml:"disabled"`
+	Delay    uint `yaml:"delay"`
+	MaxTimes uint `yaml:"max-times"`
+	Interval int  `yaml:"interval"`
+}
 
-// DefaultConfigFile 默认配置文件路径
-var DefaultConfigFile = path.Join(currentPath, "config.yml")
+// Account 账号配置
+type Account struct {
+	Uin           int64      `yaml:"uin"`
+	Password      string     `yaml:"password"`
+	Encrypt       bool       `yaml:"encrypt"`
+	Status        int        `yaml:"status"`
+	ReLogin       *Reconnect `yaml:"relogin"`
+	UseSSOAddress bool       `yaml:"use-sso-address"`
+}
 
 // Config 总配置文件
 type Config struct {
-	Account struct {
-		Uin      int64  `yaml:"uin"`
-		Password string `yaml:"password"`
-		Encrypt  bool   `yaml:"encrypt"`
-		Status   int32  `yaml:"status"`
-		ReLogin  struct {
-			Disabled bool `yaml:"disabled"`
-			Delay    uint `yaml:"delay"`
-			MaxTimes uint `yaml:"max-times"`
-			Interval int  `yaml:"interval"`
-		}
-		UseSSOAddress bool `yaml:"use-sso-address"`
-	} `yaml:"account"`
-
+	Account   *Account `yaml:"account"`
 	Heartbeat struct {
 		Disabled bool `yaml:"disabled"`
 		Interval int  `yaml:"interval"`
@@ -49,10 +47,10 @@ type Config struct {
 
 	Message struct {
 		PostFormat          string `yaml:"post-format"`
+		ProxyRewrite        string `yaml:"proxy-rewrite"`
 		IgnoreInvalidCQCode bool   `yaml:"ignore-invalid-cqcode"`
 		ForceFragment       bool   `yaml:"force-fragment"`
 		FixURL              bool   `yaml:"fix-url"`
-		ProxyRewrite        string `yaml:"proxy-rewrite"`
 		ReportSelfMessage   bool   `yaml:"report-self-message"`
 		RemoveReplyAt       bool   `yaml:"remove-reply-at"`
 		ExtraReplyData      bool   `yaml:"extra-reply-data"`
@@ -63,6 +61,7 @@ type Config struct {
 		LogLevel    string `yaml:"log-level"`
 		LogAging    int    `yaml:"log-aging"`
 		LogForceNew bool   `yaml:"log-force-new"`
+		LogColorful *bool  `yaml:"log-colorful"`
 		Debug       bool   `yaml:"debug"`
 	} `yaml:"output"`
 
@@ -147,31 +146,32 @@ type LevelDBConfig struct {
 	Enable bool `yaml:"enable"`
 }
 
-var (
-	config *Config
-	once   sync.Once
-)
+// MongoDBConfig mongodb 相关配置
+type MongoDBConfig struct {
+	Enable   bool   `yaml:"enable"`
+	URI      string `yaml:"uri"`
+	Database string `yaml:"database"`
+}
 
-// Get 从默认配置文件路径中获取
-func Get() *Config {
-	once.Do(func() {
-		hasEnvironmentConf := os.Getenv("GCQ_UIN") != ""
+// Parse 从默认配置文件路径中获取
+func Parse(path string) *Config {
+	fromEnv := os.Getenv("GCQ_UIN") != ""
 
-		file, err := os.Open(DefaultConfigFile)
-		config = &Config{
-			Servers: make([]map[string]yaml.Node, 0),
-			Database: make(map[string]yaml.Node),
+	file, err := os.Open(path)
+	config := &Config{
+		Servers: make([]map[string]yaml.Node, 0),
+		Database: make(map[string]yaml.Node),
+	}
+	if err == nil {
+		defer func() { _ = file.Close() }()
+		if err = yaml.NewDecoder(file).Decode(config); err != nil && !fromEnv {
+			log.Fatal("配置文件不合法!", err)
 		}
-		if err == nil {
-			defer func() { _ = file.Close() }()
-			if err = yaml.NewDecoder(file).Decode(config); err != nil && !hasEnvironmentConf {
-				log.Fatal("配置文件不合法!", err)
-			}
-		} else if !hasEnvironmentConf {
-			generateConfig()
-			os.Exit(0)
-		}
-
+	} else if !fromEnv {
+		generateConfig()
+		os.Exit(0)
+	}
+	if fromEnv {
 		// type convert tools
 		toInt64 := func(str string) int64 {
 			i, _ := strconv.ParseInt(str, 10, 64)
@@ -179,13 +179,16 @@ func Get() *Config {
 		}
 
 		// load config from environment variable
-		global.SetAtDefault(&config.Account.Uin, toInt64(os.Getenv("GCQ_UIN")), int64(0))
-		global.SetAtDefault(&config.Account.Password, os.Getenv("GCQ_PWD"), "")
-		global.SetAtDefault(&config.Account.Status, int32(toInt64(os.Getenv("GCQ_STATUS"))), int32(0))
-		global.SetAtDefault(&config.Account.ReLogin.Disabled, !global.EnsureBool(os.Getenv("GCQ_RELOGIN"), false), false)
-		global.SetAtDefault(&config.Account.ReLogin.Delay, uint(toInt64(os.Getenv("GCQ_RELOGIN_DELAY"))), uint(0))
-		global.SetAtDefault(&config.Account.ReLogin.MaxTimes, uint(toInt64(os.Getenv("GCQ_RELOGIN_MAX_TIMES"))), uint(0))
-		dbConf := &LevelDBConfig{Enable: global.EnsureBool(os.Getenv("GCQ_LEVELDB"), true)}
+		param.SetAtDefault(&config.Account.Uin, toInt64(os.Getenv("GCQ_UIN")), int64(0))
+		param.SetAtDefault(&config.Account.Password, os.Getenv("GCQ_PWD"), "")
+		param.SetAtDefault(&config.Account.Status, int32(toInt64(os.Getenv("GCQ_STATUS"))), int32(0))
+		param.SetAtDefault(&config.Account.ReLogin.Disabled, !param.EnsureBool(os.Getenv("GCQ_RELOGIN_DISABLED"), true), false)
+		param.SetAtDefault(&config.Account.ReLogin.Delay, uint(toInt64(os.Getenv("GCQ_RELOGIN_DELAY"))), uint(0))
+		param.SetAtDefault(&config.Account.ReLogin.MaxTimes, uint(toInt64(os.Getenv("GCQ_RELOGIN_MAX_TIMES"))), uint(0))
+		dbConf := &LevelDBConfig{Enable: param.EnsureBool(os.Getenv("GCQ_LEVELDB"), true)}
+		if config.Database == nil {
+			config.Database = make(map[string]yaml.Node)
+		}
 		config.Database["leveldb"] = func() yaml.Node {
 			n := &yaml.Node{}
 			_ = n.Encode(dbConf)
@@ -201,9 +204,9 @@ func Get() *Config {
 					AccessToken: accessTokenEnv,
 				},
 			}
-			global.SetExcludeDefault(&httpConf.Disabled, global.EnsureBool(os.Getenv("GCQ_HTTP_DISABLE"), false), false)
-			global.SetExcludeDefault(&httpConf.Host, os.Getenv("GCQ_HTTP_HOST"), "")
-			global.SetExcludeDefault(&httpConf.Port, int(toInt64(os.Getenv("GCQ_HTTP_PORT"))), 0)
+			param.SetExcludeDefault(&httpConf.Disabled, param.EnsureBool(os.Getenv("GCQ_HTTP_DISABLE"), false), false)
+			param.SetExcludeDefault(&httpConf.Host, os.Getenv("GCQ_HTTP_HOST"), "")
+			param.SetExcludeDefault(&httpConf.Port, int(toInt64(os.Getenv("GCQ_HTTP_PORT"))), 0)
 			if os.Getenv("GCQ_HTTP_POST_URL") != "" {
 				httpConf.Post = append(httpConf.Post, struct {
 					URL    string `yaml:"url"`
@@ -222,9 +225,9 @@ func Get() *Config {
 					AccessToken: accessTokenEnv,
 				},
 			}
-			global.SetExcludeDefault(&wsServerConf.Disabled, global.EnsureBool(os.Getenv("GCQ_WS_DISABLE"), false), false)
-			global.SetExcludeDefault(&wsServerConf.Host, os.Getenv("GCQ_WS_HOST"), "")
-			global.SetExcludeDefault(&wsServerConf.Port, int(toInt64(os.Getenv("GCQ_WS_PORT"))), 0)
+			param.SetExcludeDefault(&wsServerConf.Disabled, param.EnsureBool(os.Getenv("GCQ_WS_DISABLE"), false), false)
+			param.SetExcludeDefault(&wsServerConf.Host, os.Getenv("GCQ_WS_HOST"), "")
+			param.SetExcludeDefault(&wsServerConf.Port, int(toInt64(os.Getenv("GCQ_WS_PORT"))), 0)
 			_ = node.Encode(wsServerConf)
 			config.Servers = append(config.Servers, map[string]yaml.Node{"ws": *node})
 		}
@@ -235,10 +238,10 @@ func Get() *Config {
 					AccessToken: accessTokenEnv,
 				},
 			}
-			global.SetExcludeDefault(&rwsConf.Disabled, global.EnsureBool(os.Getenv("GCQ_RWS_DISABLE"), false), false)
-			global.SetExcludeDefault(&rwsConf.API, os.Getenv("GCQ_RWS_API"), "")
-			global.SetExcludeDefault(&rwsConf.Event, os.Getenv("GCQ_RWS_EVENT"), "")
-			global.SetExcludeDefault(&rwsConf.Universal, os.Getenv("GCQ_RWS_UNIVERSAL"), "")
+			param.SetExcludeDefault(&rwsConf.Disabled, param.EnsureBool(os.Getenv("GCQ_RWS_DISABLE"), false), false)
+			param.SetExcludeDefault(&rwsConf.API, os.Getenv("GCQ_RWS_API"), "")
+			param.SetExcludeDefault(&rwsConf.Event, os.Getenv("GCQ_RWS_EVENT"), "")
+			param.SetExcludeDefault(&rwsConf.Universal, os.Getenv("GCQ_RWS_UNIVERSAL"), "")
 			_ = node.Encode(rwsConf)
 			config.Servers = append(config.Servers, map[string]yaml.Node{"ws-reverse": *node})
 		}
@@ -249,13 +252,13 @@ func Get() *Config {
 					AccessToken: accessTokenEnv,
 				},
 			}
-			global.SetExcludeDefault(&fwsConf.Disabled, global.EnsureBool(os.Getenv("GCQ_FWS_DISABLE"), false), false)
-			global.SetExcludeDefault(&fwsConf.Url, os.Getenv("GCQ_FWS_URL"), "")
-			global.SetExcludeDefault(&fwsConf.ReconnectInterval, int(toInt64(os.Getenv("GCQ_FWS_RECONNECT_INTERVAL"))), 3000)
+			param.SetExcludeDefault(&fwsConf.Disabled, param.EnsureBool(os.Getenv("GCQ_FWS_DISABLE"), false), false)
+			param.SetExcludeDefault(&fwsConf.Url, os.Getenv("GCQ_FWS_URL"), "")
+			param.SetExcludeDefault(&fwsConf.ReconnectInterval, int(toInt64(os.Getenv("GCQ_FWS_RECONNECT_INTERVAL"))), 3000)
 			_ = node.Encode(fwsConf)
 			config.Servers = append(config.Servers, map[string]yaml.Node{"ws-fortune": *node})
 		}
-	})
+	}
 	return config
 }
 
@@ -329,7 +332,7 @@ const httpDefault = `  # HTTP 通信设置
       post:
       #- url: '' # 地址
       #  secret: ''           # 密钥
-      #- url: 127.0.0.1:5701 # 地址
+      #- url: http://127.0.0.1:5701/ # 地址
       #  secret: ''          # 密钥
 `
 

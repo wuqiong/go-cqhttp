@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,10 +13,12 @@ import (
 
 	"github.com/Mrs4s/MiraiGo/utils"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/yaml.v3"
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
 	"github.com/Mrs4s/go-cqhttp/global"
-	"github.com/Mrs4s/go-cqhttp/global/config"
+	api2 "github.com/Mrs4s/go-cqhttp/modules/api"
+	"github.com/Mrs4s/go-cqhttp/modules/config"
 )
 
 type lambdaClient struct {
@@ -76,8 +79,17 @@ func (l *lambdaResponseWriter) WriteHeader(statusCode int) {
 
 var cli *lambdaClient
 
-// RunLambdaClient  type: [scf,aws]
-func RunLambdaClient(bot *coolq.CQBot, conf *config.LambdaServer) {
+// runLambda  type: [scf,aws]
+func runLambda(bot *coolq.CQBot, node yaml.Node) {
+	var conf config.LambdaServer
+	switch err := node.Decode(&conf); {
+	case err != nil:
+		log.Warn("读取lambda配置失败 :", err)
+		fallthrough
+	case conf.Disabled:
+		return
+	}
+
 	cli = &lambdaClient{
 		lambdaType: conf.Type,
 		client:     http.Client{Timeout: 0},
@@ -86,8 +98,7 @@ func RunLambdaClient(bot *coolq.CQBot, conf *config.LambdaServer) {
 	case "scf": // tencent serverless function
 		base := fmt.Sprintf("http://%s:%s/runtime/",
 			os.Getenv("SCF_RUNTIME_API"),
-			os.Getenv("SCF_RUNTIME_API_PORT"),
-		)
+			os.Getenv("SCF_RUNTIME_API_PORT"))
 		cli.nextURL = base + "invocation/next"
 		cli.responseURL = base + "invocation/response"
 		post, err := http.Post(base+"init/ready", "", nil)
@@ -105,9 +116,9 @@ func RunLambdaClient(bot *coolq.CQBot, conf *config.LambdaServer) {
 		log.Fatal("unknown lambda type:", conf.Type)
 	}
 
-	api := newAPICaller(bot)
+	api := api2.NewCaller(bot)
 	if conf.RateLimit.Enabled {
-		api.use(rateLimit(conf.RateLimit.Frequency, conf.RateLimit.Bucket))
+		api.Use(rateLimit(conf.RateLimit.Frequency, conf.RateLimit.Bucket))
 	}
 	server := &httpServer{
 		api:         api,
@@ -116,23 +127,20 @@ func RunLambdaClient(bot *coolq.CQBot, conf *config.LambdaServer) {
 
 	for {
 		req := cli.next()
-		if req == nil {
-			writer := lambdaResponseWriter{statusCode: 200}
-			_, _ = writer.Write(nil)
-			continue
-		}
+		writer := lambdaResponseWriter{statusCode: 200, header: make(http.Header)}
 		func() {
 			defer func() {
 				if e := recover(); e != nil {
 					log.Warnf("Lambda 出现不可恢复错误: %v\n%s", e, debug.Stack())
 				}
 			}()
-			writer := lambdaResponseWriter{header: make(http.Header)}
-			server.ServeHTTP(&writer, req)
-			if err := writer.flush(); err != nil {
-				log.Warnf("Lambda 发送响应失败: %v", err)
+			if req != nil {
+				server.ServeHTTP(&writer, req)
 			}
 		}()
+		if err := writer.flush(); err != nil {
+			log.Warnf("Lambda 发送响应失败: %v", err)
+		}
 	}
 }
 
@@ -160,8 +168,8 @@ func (c *lambdaClient) next() *http.Request {
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
-	var req = new(http.Request)
-	var invoke = new(lambdaInvoke)
+	req := new(http.Request)
+	invoke := new(lambdaInvoke)
 	_ = json.NewDecoder(resp.Body).Decode(invoke)
 	if invoke.HTTPMethod == "" { // 不是 api 网关
 		return nil

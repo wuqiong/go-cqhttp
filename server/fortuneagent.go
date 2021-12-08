@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"net/http"
 	"runtime/debug"
 	"strconv"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
 	"github.com/Mrs4s/go-cqhttp/global"
-	"github.com/Mrs4s/go-cqhttp/global/config"
+	"github.com/Mrs4s/go-cqhttp/modules/api"
+	"github.com/Mrs4s/go-cqhttp/modules/config"
+	"github.com/Mrs4s/go-cqhttp/modules/filter"
 
 	"github.com/Mrs4s/MiraiGo/utils"
 	"github.com/gorilla/websocket"
@@ -37,23 +40,32 @@ type fortuneClient struct {
 type fortuneAgentConn struct {
 	*websocket.Conn
 	sync.Mutex
-	apiCaller *apiCaller
+	apiCaller *api.Caller
 }
 
 
 // RunFortuneClient 运行一个正向WS client
-func RunFortuneClient(b *coolq.CQBot, conf *config.WebsocketFortune) {
+//func runFortuneClient(b *coolq.CQBot, conf *config.WebsocketFortune) {
+func runFortuneClient(b *coolq.CQBot, node yaml.Node) {
+	var conf config.WebsocketFortune
+	switch err := node.Decode(&conf); {
+	case err != nil:
+		log.Warn("读取Fortune Websocket配置失败 :", err)
+		fallthrough
+	case conf.Disabled:
+		return
+	}
 	if conf.Disabled {
 		return
 	}
 	c := &fortuneClient{
 		bot:    b,
-		conf:   conf,
+		conf:   &conf,
 		universalConnSem: semaphore.NewWeighted(1),
 		token:  conf.AccessToken,
 		filter: conf.Filter,
 	}
-	addFilter(c.filter)
+	filter.Add(c.filter)
 	if c.conf.Url != "" {
 		c.connectUniversal()
 	}
@@ -94,9 +106,9 @@ connectWS:
 	}
 
 	if c.universalConn == nil {
-		wrappedConn := &fortuneAgentConn{Conn: conn, apiCaller: newAPICaller(c.bot)}
+		wrappedConn := &fortuneAgentConn{Conn: conn, apiCaller: api.NewCaller(c.bot)}
 		if c.conf.RateLimit.Enabled {
-			wrappedConn.apiCaller.use(rateLimit(c.conf.RateLimit.Frequency, c.conf.RateLimit.Bucket))
+			wrappedConn.apiCaller.Use(rateLimit(c.conf.RateLimit.Frequency, c.conf.RateLimit.Bucket))
 		}
 		c.universalConn = wrappedConn
 	} else {
@@ -138,7 +150,7 @@ func (c *fortuneClient) listenAPI(conn *fortuneAgentConn, u bool) {
 }
 
 func (c *fortuneClient) onBotPushEvent(e *coolq.Event) {
-	filter := findFilter(c.filter)
+	filter := filter.Find(c.filter)
 	if filter != nil && !filter.Eval(gjson.Parse(e.JSONString())) {
 		log.Debugf("上报Event %s 到 FortuneAgent工具WS服务器 时被过滤.", e.JSONBytes())
 		return
@@ -148,7 +160,7 @@ func (c *fortuneClient) onBotPushEvent(e *coolq.Event) {
 		conn.Lock()
 		defer conn.Unlock()
 		_ = conn.SetWriteDeadline(time.Now().Add(time.Second * 15))
-		eventMsg := coolq.MSG{
+		eventMsg := global.MSG{
 			"type":"event",
 			"payload": e.RawMsg,
 		}
@@ -177,11 +189,11 @@ func (c *fortuneAgentConn) handleRequest(_ *coolq.CQBot, payload []byte) {
 	j := gjson.Parse(utils.B2S(payload))
 	t := strings.TrimSuffix(j.Get("action").Str, "_async")
 	log.Debugf("WS接收到FortuneAgent工具WS API调用: %v 参数: %v", t, j.Get("params").Raw)
-	ret := c.apiCaller.callAPI(t, j.Get("params"))
+	ret := c.apiCaller.Call(t, j.Get("params"))
 	if j.Get("echo").Exists() {
 		ret["echo"] = j.Get("echo").Value()
 	}
-	respMsg := coolq.MSG {
+	respMsg := global.MSG {
 		"type":"api",
 		"payload":ret,
 	}

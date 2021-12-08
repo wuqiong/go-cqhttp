@@ -1,36 +1,40 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Mrs4s/MiraiGo/utils"
-	"github.com/guonaihong/gout"
-	"github.com/guonaihong/gout/dataflow"
-	jsoniter "github.com/json-iterator/go"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"gopkg.in/yaml.v3"
 
 	"github.com/Mrs4s/go-cqhttp/coolq"
-	"github.com/Mrs4s/go-cqhttp/global/config"
+	"github.com/Mrs4s/go-cqhttp/global"
+	"github.com/Mrs4s/go-cqhttp/internal/base"
+	"github.com/Mrs4s/go-cqhttp/modules/api"
+	"github.com/Mrs4s/go-cqhttp/modules/config"
+	"github.com/Mrs4s/go-cqhttp/modules/filter"
 )
 
 type httpServer struct {
 	HTTP        *http.Server
-	api         *apiCaller
+	api         *api.Caller
 	accessToken string
 }
-
-var json = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // HTTPClient 反向HTTP上报客户端
 type HTTPClient struct {
@@ -53,13 +57,22 @@ func (h *httpCtx) Get(s string) gjson.Result {
 	if j.Exists() {
 		return j
 	}
+	validJSONParam := func(p string) bool {
+		return (strings.HasPrefix(p, "{") || strings.HasPrefix(p, "[")) && gjson.Valid(p)
+	}
 	if h.postForm != nil {
 		if form := h.postForm.Get(s); form != "" {
+			if validJSONParam(form) {
+				return gjson.Result{Type: gjson.JSON, Raw: form}
+			}
 			return gjson.Result{Type: gjson.String, Str: form}
 		}
 	}
 	if h.query != nil {
 		if query := h.query.Get(s); query != "" {
+			if validJSONParam(query) {
+				return gjson.Result{Type: gjson.JSON, Raw: query}
+			}
 			return gjson.Result{Type: gjson.String, Str: query}
 		}
 	}
@@ -107,14 +120,21 @@ func (s *httpServer) ServeHTTP(writer http.ResponseWriter, request *http.Request
 		return
 	}
 
-	action := strings.TrimPrefix(request.URL.Path, "/")
-	action = strings.TrimSuffix(action, "_async")
-	log.Debugf("HTTPServer接收到API调用: %v", action)
-	ret := s.api.callAPI(action, &ctx)
+	var response global.MSG
+	if base.AcceptOneBot12HTTPEndPoint && request.URL.Path == "/" {
+		action := strings.TrimSuffix(ctx.Get("action").Str, "_async")
+		log.Debugf("HTTPServer接收到API调用: %v", action)
+		response = s.api.Call(action, ctx.Get("params"))
+	} else {
+		action := strings.TrimPrefix(request.URL.Path, "/")
+		action = strings.TrimSuffix(action, "_async")
+		log.Debugf("HTTPServer接收到API调用: %v", action)
+		response = s.api.Call(action, &ctx)
+	}
 
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(writer).Encode(ret)
+	_ = json.NewEncoder(writer).Encode(response)
 }
 
 func checkAuth(req *http.Request, token string) int {
@@ -142,26 +162,29 @@ func checkAuth(req *http.Request, token string) int {
 	}
 }
 
-// RunHTTPServerAndClients 启动HTTP服务器与HTTP上报客户端
-func RunHTTPServerAndClients(bot *coolq.CQBot, conf *config.HTTPServer) {
-	if conf.Disabled {
+// runHTTP 启动HTTP服务器与HTTP上报客户端
+func runHTTP(bot *coolq.CQBot, node yaml.Node) {
+	var conf config.HTTPServer
+	switch err := node.Decode(&conf); {
+	case err != nil:
+		log.Warn("读取http配置失败 :", err)
+		fallthrough
+	case conf.Disabled:
 		return
 	}
-	var (
-		s    = new(httpServer)
-		addr string
-	)
-	s.accessToken = conf.AccessToken
+
+	var addr string
+	s := &httpServer{accessToken: conf.AccessToken}
 	if conf.Host == "" || conf.Port == 0 {
 		goto client
 	}
 	addr = fmt.Sprintf("%s:%d", conf.Host, conf.Port)
-	s.api = newAPICaller(bot)
+	s.api = api.NewCaller(bot)
 	if conf.RateLimit.Enabled {
-		s.api.use(rateLimit(conf.RateLimit.Frequency, conf.RateLimit.Bucket))
+		s.api.Use(rateLimit(conf.RateLimit.Frequency, conf.RateLimit.Bucket))
 	}
 	if conf.LongPolling.Enabled {
-		s.api.use(longPolling(bot, conf.LongPolling.MaxQueueSize))
+		s.api.Use(longPolling(bot, conf.LongPolling.MaxQueueSize))
 	}
 
 	go func() {
@@ -195,7 +218,7 @@ client:
 
 // Run 运行反向HTTP服务
 func (c HTTPClient) Run() {
-	addFilter(c.filter)
+	filter.Add(c.filter)
 	if c.timeout < 5 {
 		c.timeout = 5
 	}
@@ -204,49 +227,59 @@ func (c HTTPClient) Run() {
 }
 
 func (c *HTTPClient) onBotPushEvent(e *coolq.Event) {
-	var res string
 	if c.filter != "" {
-		filter := findFilter(c.filter)
-		if filter != nil && !filter.Eval(gjson.Parse(e.JSONString())) {
+		flt := filter.Find(c.filter)
+		if flt != nil && !flt.Eval(gjson.Parse(e.JSONString())) {
 			log.Debugf("上报Event %v 到 HTTP 服务器 %s 时被过滤.", c.addr, e.JSONBytes())
 			return
 		}
 	}
 
-	err := gout.POST(c.addr).SetJSON(e.JSONBytes()).BindBody(&res).SetHeader(func() gout.H {
-		h := gout.H{
-			"X-Self-ID":  c.bot.Client.Uin,
-			"User-Agent": "CQHttp/4.15.0",
+	client := http.Client{Timeout: time.Second * time.Duration(c.timeout)}
+	req, _ := http.NewRequest("POST", c.addr, bytes.NewReader(e.JSONBytes()))
+	req.Header.Set("X-Self-ID", strconv.FormatInt(c.bot.Client.Uin, 10))
+	req.Header.Set("User-Agent", "CQHttp/4.15.0")
+	if c.secret != "" {
+		mac := hmac.New(sha1.New, []byte(c.secret))
+		_, _ = mac.Write(e.JSONBytes())
+		req.Header.Set("X-Signature", "sha1="+hex.EncodeToString(mac.Sum(nil)))
+	}
+	if c.apiPort != 0 {
+		req.Header.Set("X-API-Port", strconv.FormatInt(int64(c.apiPort), 10))
+	}
+
+	var res *http.Response
+	var err error
+	const maxAttemptTimes = 5
+
+	for i := 0; i <= maxAttemptTimes; i++ {
+		res, err = client.Do(req)
+		if err == nil {
+			//goland:noinspection GoDeferInLoop
+			defer res.Body.Close()
+			break
 		}
-		if c.secret != "" {
-			mac := hmac.New(sha1.New, []byte(c.secret))
-			_, err := mac.Write(e.JSONBytes())
-			if err != nil {
-				log.Error(err)
-				return nil
-			}
-			h["X-Signature"] = "sha1=" + hex.EncodeToString(mac.Sum(nil))
+		if i != maxAttemptTimes {
+			log.Warnf("上报 Event 数据到 %v 失败: %v 将进行第 %d 次重试", c.addr, err, i+1)
 		}
-		if c.apiPort != 0 {
-			h["X-API-Port"] = c.apiPort
-		}
-		return h
-	}()).SetTimeout(time.Second * time.Duration(c.timeout)).F().Retry().Attempt(5).
-		WaitTime(time.Millisecond * 500).MaxWaitTime(time.Second * 5).
-		Func(func(con *dataflow.Context) error {
-			if con.Error != nil {
-				log.Warnf("上报Event到 HTTP 服务器 %v 时出现错误: %v 将重试.", c.addr, con.Error)
-				return con.Error
-			}
-			return nil
-		}).Do()
+		const maxWait = int64(time.Second * 3)
+		const minWait = int64(time.Millisecond * 500)
+		wait := rand.Int63n(maxWait-minWait) + minWait
+		time.Sleep(time.Duration(wait))
+	}
+
 	if err != nil {
 		log.Warnf("上报Event数据 %s 到 %v 失败: %v", e.JSONBytes(), c.addr, err)
 		return
 	}
 	log.Debugf("上报Event数据 %s 到 %v", e.JSONBytes(), c.addr)
-	if gjson.Valid(res) {
-		c.bot.CQHandleQuickOperation(gjson.Parse(e.JSONString()), gjson.Parse(res))
+
+	r, err := io.ReadAll(res.Body)
+	if err != nil {
+		return
+	}
+	if gjson.ValidBytes(r) {
+		c.bot.CQHandleQuickOperation(gjson.Parse(e.JSONString()), gjson.ParseBytes(r))
 	}
 }
 

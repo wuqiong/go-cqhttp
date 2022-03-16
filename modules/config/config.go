@@ -127,6 +127,7 @@ func Parse(path string) *Config {
 		param.SetAtDefault(&config.Account.ReLogin.Disabled, !param.EnsureBool(os.Getenv("GCQ_RELOGIN_DISABLED"), true), false)
 		param.SetAtDefault(&config.Account.ReLogin.Delay, uint(toInt64(os.Getenv("GCQ_RELOGIN_DELAY"))), uint(0))
 		param.SetAtDefault(&config.Account.ReLogin.MaxTimes, uint(toInt64(os.Getenv("GCQ_RELOGIN_MAX_TIMES"))), uint(0))
+		param.SetAtDefault(&config.Message.IgnoreInvalidCQCode, param.EnsureBool(os.Getenv("GCQ_IGNORE_INVALID_CQCODE"), true), false)
 		dbConf := &LevelDBConfig{Enable: param.EnsureBool(os.Getenv("GCQ_LEVELDB"), true)}
 		if config.Database == nil {
 			config.Database = make(map[string]yaml.Node)
